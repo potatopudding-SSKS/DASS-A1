@@ -1,0 +1,2 @@
+Frontend URL: <to-be-filled-after-deployment>
+Backend API URL: <to-be-filled-after-deployment>
