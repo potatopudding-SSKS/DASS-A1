@@ -1,2 +1,2 @@
-Frontend URL: <to-be-filled-after-deployment>
-Backend API URL: <to-be-filled-after-deployment>
+Frontend URL: https://dassa1frontend.vercel.app/
+Backend API URL: https://dass-a1-ha2b.onrender.com
