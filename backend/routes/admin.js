@@ -5,6 +5,10 @@ const User = require("../models/user");
 const Organiser = require("../models/organiser");
 const Event = require("../models/event");
 const Registration = require("../models/registration");
+const Payment = require("../models/payment");
+const Team = require("../models/team");
+const Feedback = require("../models/feedback");
+const Discussion = require("../models/discussion");
 const Password_reset = require("../models/password_reset");
 const { protect } = require("../middleware/auth");
 const { restrict_to } = require("../middleware/role_check");
@@ -59,6 +63,40 @@ router.put("/organisers/:id/status", async (req, res) => {
         }
 
         return res.json(organiser);
+    } catch (error) {
+        return res.status(500).json({ message: error.message });
+    }
+});
+
+router.delete("/organisers/:id", async (req, res) => {
+    try {
+        const organiser_id = req.params.id;
+        const organiser = await Organiser.findById(organiser_id);
+        if (!organiser) {
+            return res.status(404).json({ message: "Organiser not found" });
+        }
+
+        const events = await Event.find({ organiser: organiser_id }).select("_id");
+        const event_ids = events.map((event) => event._id);
+
+        if (event_ids.length) {
+            await Promise.all([
+                Registration.deleteMany({ event: { $in: event_ids } }),
+                Payment.deleteMany({ event: { $in: event_ids } }),
+                Team.deleteMany({ event: { $in: event_ids } }),
+                Feedback.deleteMany({ event: { $in: event_ids } }),
+                Discussion.deleteMany({ event: { $in: event_ids } })
+            ]);
+            await Event.deleteMany({ _id: { $in: event_ids } });
+        }
+
+        await Promise.all([
+            Password_reset.deleteMany({ organiser: organiser_id }),
+            User.updateMany({}, { $pull: { followed_clubs: organiser_id } })
+        ]);
+
+        await organiser.deleteOne();
+        return res.json({ message: "Organiser and associated data deleted" });
     } catch (error) {
         return res.status(500).json({ message: error.message });
     }

@@ -5,6 +5,7 @@ const Registration = require("../models/registration");
 const Organiser = require("../models/organiser");
 const {protect} = require("../middleware/auth");
 const {restrict_to} = require("../middleware/role_check");
+const { apply_resolved_event_status, resolve_event_status } = require("../utils/event_status");
 
 const escape_regex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -13,9 +14,6 @@ router.get("/", async (req, res) => {
         const { keyword, event_type, eligibility, status, from_date, to_date, organiser_id } = req.query;
         let query = { status: { $in: ["Published", "Ongoing", "Completed"] } };
 
-        if (status) {
-            query.status = status;
-        }
         if (keyword) {
             const safe_keyword = keyword.trim();
             const escaped = escape_regex(safe_keyword);
@@ -45,7 +43,13 @@ router.get("/", async (req, res) => {
         const events = await Event.find(query)
             .populate("organiser", "organiser_name category")
             .sort({event_start_date: 1});
-        return res.json(events);
+
+        let resolved_events = events.map((event) => apply_resolved_event_status(event));
+        if (status) {
+            resolved_events = resolved_events.filter((event) => event.status === status);
+        }
+
+        return res.json(resolved_events);
     } catch (error) {
         return res.status(500).json({message: error.message});
     }
@@ -68,15 +72,19 @@ router.get("/trending", async (req, res) => {
         ]);
 
         const event_ids = trending_rows.map((row) => row._id);
-        const events = await Event.find({ _id: { $in: event_ids }, status: { $in: ["Published", "Ongoing", "Completed"] } })
+        const events = await Event.find({ _id: { $in: event_ids } })
             .populate("organiser", "organiser_name");
 
-        const by_id = new Map(events.map((event) => [event._id.toString(), event]));
+        const visible_events = events
+            .map((event) => apply_resolved_event_status(event))
+            .filter((event) => ["Published", "Ongoing", "Completed"].includes(event.status));
+
+        const by_id = new Map(visible_events.map((event) => [event._id.toString(), event]));
         const ordered = trending_rows
             .map((row) => {
                 const event = by_id.get(row._id.toString());
                 if (!event) return null;
-                const event_obj = event.toObject();
+                const event_obj = { ...event };
                 event_obj.registrations_24h = row.registrations_24h;
                 return event_obj;
             })
@@ -91,7 +99,7 @@ router.get("/trending", async (req, res) => {
 router.get("/my-events", protect, restrict_to("organiser"), async (req, res) => {
     try {
         const events = await Event.find({organiser: req.user._id}).sort({createdAt: -1});
-        return res.json(events);
+        return res.json(events.map((event) => apply_resolved_event_status(event)));
     } catch (error) {
         return res.status(500).json({message: error.message});
     }
@@ -116,7 +124,7 @@ router.get("/my-events/:id/analytics", protect, restrict_to("organiser"), async 
             registrations,
             attended,
             revenue: event.total_revenue,
-            event_status: event.status
+            event_status: resolve_event_status(event)
         });
     } catch (error) {
         return res.status(500).json({ message: error.message });
@@ -131,7 +139,7 @@ router.get('/:id', async (req, res) => {
         if (!event) {
             return res.status(404).json({message: 'Event not found'});
         }
-        return res.json(event);
+        return res.json(apply_resolved_event_status(event));
     } catch (error) {
         return res.status(500).json({message: error.message});
     }

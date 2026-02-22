@@ -4,6 +4,7 @@ const Organiser = require("../models/organiser");
 const Event = require("../models/event");
 const {protect} = require("../middleware/auth");
 const {restrict_to} = require("../middleware/role_check");
+const { apply_resolved_event_status } = require("../utils/event_status");
 
 router.get("/profile", protect, restrict_to("organiser"), async (req, res) => {
     try {
@@ -53,14 +54,18 @@ router.get("/public/:id", async (req, res) => {
             return res.status(404).json({ message: "Organiser not found" });
         }
         const now = new Date();
-        const [upcoming_events, past_events] = await Promise.all([
-            Event.find({ organiser: req.params.id, event_start_date: { $gte: now }, status: { $in: ["Published", "Ongoing"] } })
-                .sort({ event_start_date: 1 })
-                .select("event_name event_start_date event_end_date status"),
-            Event.find({ organiser: req.params.id, event_end_date: { $lt: now } })
-                .sort({ event_end_date: -1 })
-                .select("event_name event_start_date event_end_date status")
-        ]);
+        const organiser_events = await Event.find({ organiser: req.params.id })
+            .sort({ event_start_date: 1 })
+            .select("event_name event_start_date event_end_date status");
+
+        const resolved_events = organiser_events.map((event) => apply_resolved_event_status(event));
+        const upcoming_events = resolved_events
+            .filter((event) => event.event_start_date && new Date(event.event_start_date) >= now && ["Published", "Ongoing"].includes(event.status))
+            .sort((a, b) => new Date(a.event_start_date) - new Date(b.event_start_date));
+
+        const past_events = resolved_events
+            .filter((event) => event.event_end_date && new Date(event.event_end_date) < now)
+            .sort((a, b) => new Date(b.event_end_date) - new Date(a.event_end_date));
 
         return res.json({ organiser, upcoming_events, past_events });
     } catch (error) {

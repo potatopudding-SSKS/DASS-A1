@@ -3,7 +3,7 @@ exports.validate_email = (email) => {
 };
 
 exports.validate_IIIT_mail = (email) => {
-    return email.endsWith("@iiit.ac.in") || email.endsWith("@research.iiit.ac.in") || email.endsWith("@students.iiit.ac.in") || email.endsWith("@alumni.iiit.ac.in");
+    return typeof email === "string" && email.toLowerCase().endsWith("iiit.ac.in");
 };
 
 exports.validate_password = (password) => {

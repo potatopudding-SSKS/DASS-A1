@@ -1,5 +1,8 @@
 const express = require("express");
 const router = express.Router();
+const fs = require("fs");
+const path = require("path");
+const multer = require("multer");
 
 const Event = require("../models/event");
 const Registration = require("../models/registration");
@@ -7,20 +10,83 @@ const { protect } = require("../middleware/auth");
 const { restrict_to } = require("../middleware/role_check");
 const { generate_qr_code } = require("../utils/qr_generator");
 const { send_email } = require("../utils/email_service");
+const { resolve_event_status } = require("../utils/event_status");
 
-router.post("/", protect, async (req, res) => {
+const registration_file_storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const dir = "uploads/form-responses";
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+        const safe_name = file.originalname.replace(/\s+/g, "-");
+        cb(null, `form-${Date.now()}-${safe_name}`);
+    }
+});
+
+const upload_registration_files = multer({
+    storage: registration_file_storage,
+    limits: { fileSize: 10 * 1024 * 1024 }
+}).any();
+
+const parse_registration_uploads = (req, res, next) => {
+    upload_registration_files(req, res, (err) => {
+        if (!err) {
+            return next();
+        }
+
+        if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+            return res.status(413).json({ message: "File too large. Maximum allowed size is 10MB." });
+        }
+
+        return res.status(400).json({ message: err.message || "Invalid upload" });
+    });
+};
+
+const parse_form_responses = (raw_responses) => {
+    if (!raw_responses) return [];
+    if (Array.isArray(raw_responses)) return raw_responses;
+    if (typeof raw_responses === "string") {
+        try {
+            const parsed = JSON.parse(raw_responses);
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (error) {
+            return [];
+        }
+    }
+    return [];
+};
+
+const parse_merch_details = (raw_merch_details) => {
+    if (!raw_merch_details) return null;
+    if (typeof raw_merch_details === "object") return raw_merch_details;
+    if (typeof raw_merch_details === "string") {
+        try {
+            return JSON.parse(raw_merch_details);
+        } catch (error) {
+            return null;
+        }
+    }
+    return null;
+};
+
+router.post("/", protect, parse_registration_uploads, async (req, res) => {
     try {
         if (req.user_type !== "participant") {
             return res.status(403).json({ message: "Only participants can register" });
         }
 
-        const { event_id, form_responses, merch_details, team_id } = req.body;
+        const { event_id, team_id } = req.body;
+        const merch_details = parse_merch_details(req.body.merch_details);
         const event = await Event.findById(event_id);
         if (!event) {
             return res.status(404).json({ message: "Event not found" });
         }
 
-        if (!["Published", "Ongoing"].includes(event.status)) {
+        const effective_event_status = resolve_event_status(event);
+        if (!["Published", "Ongoing"].includes(effective_event_status)) {
             return res.status(400).json({ message: "Event is not open for registration" });
         }
 
@@ -54,6 +120,32 @@ router.post("/", protect, async (req, res) => {
                 return res.status(400).json({ message: "Stock exhausted" });
             }
         }
+
+        const existing_form_responses = parse_form_responses(req.body.form_responses);
+        const response_map = new Map(
+            existing_form_responses
+                .filter((entry) => entry?.field_label)
+                .map((entry) => [entry.field_label, entry.field_value])
+        );
+
+        for (const uploaded_file of (req.files || [])) {
+            const field_label = uploaded_file.fieldname.replace(/^file:/, "").trim();
+            response_map.set(field_label, `/${uploaded_file.path.replace(/\\/g, "/")}`);
+        }
+
+        for (const field of (event.custom_form_fields || [])) {
+            if (!field.is_required) continue;
+            const value = response_map.get(field.field_label);
+            const is_empty = value === undefined || value === null || (typeof value === "string" && !value.trim());
+            if (is_empty) {
+                return res.status(400).json({ message: `Missing required field: ${field.field_label}` });
+            }
+        }
+
+        const form_responses = Array.from(response_map.entries()).map(([field_label, field_value]) => ({
+            field_label,
+            field_value
+        }));
 
         const is_paid_event = event.registration_fee > 0;
         const ticket_id = `TKT-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
@@ -109,7 +201,16 @@ router.get("/my-registrations", protect, async (req, res) => {
         const registrations = await Registration.find({ participant: req.user._id })
             .populate("event", "event_name event_start_date event_end_date status event_type organiser")
             .sort({ createdAt: -1 });
-        return res.json(registrations);
+
+        const enriched = registrations.map((registration) => {
+            const registration_obj = registration.toObject();
+            if (registration_obj.event) {
+                registration_obj.event.status = resolve_event_status(registration_obj.event);
+            }
+            return registration_obj;
+        });
+
+        return res.json(enriched);
     } catch (error) {
         return res.status(500).json({ message: error.message });
     }

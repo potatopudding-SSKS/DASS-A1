@@ -70,6 +70,3 @@ This project implements the full core system and selected advanced features from
 - Organizer: created by admin from admin panel.
 - Admin: must exist in DB (seed manually or by script).
 
-## Notes
-- Frontend build passes (`npm run build`).
-- Backend syntax checks pass (`node --check` across backend files).
